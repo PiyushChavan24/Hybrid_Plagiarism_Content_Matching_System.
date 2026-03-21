@@ -1,0 +1,29 @@
+# Node dependencies
+server/node_modules/
+client/node_modules/
+
+# Environment files
+server/.env
+
+# Temp uploads
+server/uploads_temp/
+
+# Python
+__pycache__/
+*.pyc
+.conda/
+
+# SBERT model cache (large ~90MB, auto-downloads on first run)
+# These are stored in user home, not in project, so no action needed
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build output
+client/dist/
+client/build/
+
+# IDE
+.vscode/
+.idea/
