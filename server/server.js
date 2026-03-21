@@ -17,7 +17,7 @@ app.use(
   origin: [
    "http://localhost:3000",
    "http://localhost:5173",
-   "https://hpcm-frontend.onrender.com", // add this
+   "https://hpcm-plagiarism-detection.vercel.app", // add this
   ],
   credentials: true,
  }),
