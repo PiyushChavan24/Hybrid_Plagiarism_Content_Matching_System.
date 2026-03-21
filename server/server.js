@@ -14,7 +14,11 @@ const PORT = process.env.PORT || 5000;
 // ---------------------------------------------------------------------------
 app.use(
  cors({
-  origin: ["http://localhost:3000", "http://localhost:5173"],
+  origin: [
+   "http://localhost:3000",
+   "http://localhost:5173",
+   "https://hpcm-frontend.onrender.com", // add this
+  ],
   credentials: true,
  }),
 );
