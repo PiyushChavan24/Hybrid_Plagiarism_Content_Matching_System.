@@ -195,6 +195,7 @@ class SuspectDocument(BaseModel):
     id: str
     title: str = "Untitled"
     text: str
+    embedding: list[float] | None = None
 
 
 class CompareRequest(BaseModel):
@@ -209,6 +210,8 @@ class HealthResponse(BaseModel):
     service: str
     version: str
 
+class EmbedRequest(BaseModel):
+    text: str
 
 # ---------------------------------------------------------------------------
 # Endpoints
@@ -268,7 +271,27 @@ def compare_documents(request: CompareRequest):
     except Exception as e:
         logger.error("Pipeline error: %s", str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=f"Pipeline error: {str(e)}")
+@app.post("/embed")
+def embed_document(request: EmbedRequest):
+    """Pre-compute and return document embedding."""
+    from modules.preprocessing import preprocess
+    from modules.semantic import sbert_model
+    import numpy as np
 
+    prep = preprocess(request.text)
+    sentences = prep["sentences"]
+
+    if not sentences:
+        return {"embedding": [], "num_sentences": 0}
+
+    embeddings = sbert_model.encode(sentences, show_progress_bar=False)
+    doc_embedding = np.mean(embeddings, axis=0).tolist()
+
+    return {
+        "embedding": doc_embedding,
+        "num_sentences": len(sentences),
+        "model": "all-MiniLM-L6-v2"
+    }
 
 # ---------------------------------------------------------------------------
 # Run directly

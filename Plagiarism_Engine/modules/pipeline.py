@@ -3,8 +3,10 @@ M8 — pipeline.py
 HPCM Plagiarism Detection System
 ----------------------------------
 Orchestrator: calls M1 → M7 + M9 in sequence, returns a full report dict.
-OPTIMIZED: Caches source preprocessing and embeddings across comparisons.
-           Uses pre-computed suspect embeddings when available.
+OPTIMIZED:
+  - Caches source preprocessing and embeddings across comparisons
+  - Uses pre-computed suspect embeddings when available
+  - Skips snippet extraction for LOW risk pairs
 """
 
 import logging
@@ -16,9 +18,9 @@ from modules.lexical import compute_lexical_similarity
 from modules.semantic import compute_semantic_similarity, sbert_model
 from modules.stylometric import compute_stylometric_similarity
 from modules.fusion import compute_fusion
-from modules.DSC import compute_threshold
+from modules.dsc import compute_threshold
 from modules.risk import classify_risk
-from modules.Snippets import extract_snippets
+from modules.snippets import extract_snippets
 
 # ---------------------------------------------------------------------------
 # Logger
@@ -40,11 +42,9 @@ def run_pipeline(
     suspect_title: str,
     suspect_text: str,
     use_layer4: bool = True,
-    # Pre-computed source data (for multi-comparison optimization)
     _src_prep: dict = None,
     _src_embeddings: np.ndarray = None,
     _src_pos: list = None,
-    # Pre-computed suspect embedding (from database)
     _sus_embedding: list = None,
 ) -> dict:
     """
@@ -74,10 +74,9 @@ def run_pipeline(
     # ---- M3: Semantic Similarity (use cached embeddings) ----
     logger.info("M3: Computing semantic similarity...")
     if _src_embeddings is not None and len(_src_embeddings) > 0:
-        # Use cached source embeddings
         from sklearn.metrics.pairwise import cosine_similarity
 
-        # Use pre-computed suspect embedding if available, otherwise encode
+        # Use pre-computed suspect embedding if available
         if _sus_embedding is not None:
             logger.info("M3: Using pre-computed suspect embedding")
             sus_embeddings = np.array(_sus_embedding).reshape(1, -1)
@@ -95,7 +94,6 @@ def run_pipeline(
         else:
             src_doc = np.mean(_src_embeddings, axis=0).reshape(1, -1)
 
-            # For pre-computed embedding, it's already a document-level embedding
             if _sus_embedding is not None:
                 sus_doc = sus_embeddings
             else:
@@ -103,10 +101,7 @@ def run_pipeline(
 
             s_sem_val = float(cosine_similarity(src_doc, sus_doc)[0][0])
 
-            # Sentence-level similarity matrix (only if we have sentence-level embeddings)
             if _sus_embedding is not None:
-                # Can't compute sentence-level matrix with doc-level embedding
-                # Use doc-level similarity as approximation
                 sem_result = {
                     "s_sem": round(s_sem_val, 6),
                     "max_sentence_sim": round(s_sem_val, 6),
@@ -170,13 +165,17 @@ def run_pipeline(
     logger.info("M7: Classifying risk...")
     risk_result = classify_risk(c_final, t_cal)
 
-    # ---- M9: Snippet Extraction (use cached embeddings) ----
-    logger.info("M9: Extracting matching snippets...")
-    snippets = extract_snippets(
-        src_prep["sentences"],
-        sus_prep["sentences"],
-        _src_embeddings=_src_embeddings,
-    )
+    # ---- M9: Snippet Extraction (only for MEDIUM/HIGH risk) ----
+    if risk_result["risk_level"] in ("HIGH", "MEDIUM"):
+        logger.info("M9: Extracting matching snippets...")
+        snippets = extract_snippets(
+            src_prep["sentences"],
+            sus_prep["sentences"],
+            _src_embeddings=_src_embeddings,
+        )
+    else:
+        logger.info("M9: Skipped (LOW risk — no snippets needed)")
+        snippets = []
 
     elapsed = round(time.time() - start_time, 3)
 
@@ -224,7 +223,7 @@ def run_pipeline(
     }
 
     logger.info(
-        "Pipeline complete: %s vs %s → %s (C=%.4f, T=%.4f, snippets=%d, cached_sus=%s) in %.3fs",
+        "Pipeline complete: %s vs %s → %s (C=%.4f, T=%.4f, snippets=%d, cached=%s) in %.3fs",
         source_id, suspect_id, risk_result["risk_level"],
         c_final, t_cal, len(snippets), _sus_embedding is not None, elapsed,
     )
@@ -239,8 +238,8 @@ def run_full_comparison(
 ) -> dict:
     """
     Compare one project against multiple suspect documents.
-    OPTIMIZED: Pre-computes source preprocessing, embeddings, and POS tags once.
-               Uses pre-computed suspect embeddings when available from database.
+    OPTIMIZED: Pre-computes source data once, uses cached suspect embeddings,
+               skips snippet extraction for LOW risk pairs.
     """
     total_start = time.time()
 
@@ -253,7 +252,7 @@ def run_full_comparison(
     cached_count = sum(1 for s in compare_against if s.get("embedding"))
     logger.info(
         "Source pre-computed: %d sentences, %d tokens, embeddings shape=%s. "
-        "Suspects: %d total, %d with pre-computed embeddings",
+        "Suspects: %d total, %d with cached embeddings",
         src_prep["num_sentences"], src_prep["num_tokens"],
         src_embeddings.shape if len(src_embeddings) > 0 else "(empty)",
         len(compare_against), cached_count,
@@ -267,7 +266,7 @@ def run_full_comparison(
 
     for i, suspect in enumerate(compare_against):
         logger.info(
-            "Comparing %d/%d: %s (cached_embedding=%s)",
+            "Comparing %d/%d: %s (cached=%s)",
             i + 1, len(compare_against),
             suspect.get("title", suspect["id"]),
             bool(suspect.get("embedding")),
@@ -306,77 +305,3 @@ def run_full_comparison(
         "total_comparisons": len(comparisons),
         "total_elapsed_seconds": total_elapsed,
     }
-
-
-# ========================== TEST BLOCK ====================================
-if __name__ == "__main__":
-    import json
-
-    logging.basicConfig(level=logging.INFO)
-
-    print("=" * 65)
-    print("HPCM M8 — Optimized Pipeline Test")
-    print("=" * 65)
-
-    source_text = """
-    Natural language processing (NLP) is a subfield of linguistics, computer
-    science, and artificial intelligence concerned with the interactions between
-    computers and human language. The goal is to enable computers to understand,
-    interpret, and generate human language in a valuable way. NLP combines
-    computational linguistics with statistical, machine learning, and deep
-    learning models to process human language.
-    """
-
-    suspects = [
-        {
-            "id": "doc_paraphrase",
-            "title": "NLP Overview (paraphrased)",
-            "text": """
-            NLP, a branch of AI, focuses on the interaction between computers
-            and human languages. It aims to help machines understand and produce
-            natural language that is meaningful and useful. The field brings
-            together ideas from linguistics and machine learning to analyze
-            and generate text.
-            """,
-        },
-        {
-            "id": "doc_different",
-            "title": "Photosynthesis Article",
-            "text": """
-            Photosynthesis is the process used by plants to convert light
-            energy into chemical energy that can be stored and later released
-            to fuel the plant's activities. This process occurs primarily in
-            the leaves of the plant using chlorophyll pigments.
-            """,
-        },
-        {
-            "id": "doc_copy",
-            "title": "Exact Copy",
-            "text": source_text,
-        },
-    ]
-
-    result = run_full_comparison(
-        project_id="proj_001",
-        project_text=source_text,
-        compare_against=suspects,
-        use_layer4=True,
-    )
-
-    print(f"\n  Total time: {result['total_elapsed_seconds']}s")
-    print(f"  Comparisons: {result['total_comparisons']}")
-
-    for comp in result["comparisons"]:
-        risk = comp["risk"]["level"]
-        c = comp["scores"]["c_final"]
-        title = comp["suspect_title"]
-        t = comp["metadata"]["elapsed_seconds"]
-        snips = len(comp["snippets"])
-        cached = comp["metadata"]["used_cached_suspect_embedding"]
-
-        print(f"\n  [{risk:6s}] {title}")
-        print(f"           C_final={c:.4f}  Time={t}s  Snippets={snips}  Cached={cached}")
-
-    print(f"\n{'=' * 65}")
-    print("M8 pipeline.py (optimized) — TEST COMPLETE")
-    print("=" * 65)

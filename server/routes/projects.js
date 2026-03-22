@@ -212,7 +212,7 @@ router.post("/:id/compare", async (req, res) => {
     compare_against: compareAgainst,
     use_layer4: useLayer4,
    },
-   { headers: getMLHeaders(), timeout: 120000 },
+   { headers: getMLHeaders(), timeout: 300000 },
   );
 
   const pipelineResult = response.data;

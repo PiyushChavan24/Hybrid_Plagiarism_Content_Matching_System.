@@ -52,30 +52,21 @@ lemmatizer = WordNetLemmatizer()
 # =============================== core API =================================
 
 def normalize_text(raw: str) -> str:
-    """
-    Light normalization applied before any NLP step:
-    - collapse whitespace / newlines
-    - strip non-ASCII control chars
-    - lowercase
-    """
     text = raw.strip()
-    text = re.sub(r"[^\x20-\x7E\n]", " ", text)   # keep printable ASCII + newline
-    text = re.sub(r"\s+", " ", text)                 # collapse whitespace
+    text = re.sub(r"[^\x20-\x7E\n]", " ", text)
+    text = re.sub(r"\s+", " ", text)
     return text.lower()
 
 
 def tokenize_sentences(text: str) -> list[str]:
-    """Split text into sentences using NLTK punkt."""
     return sent_tokenize(text)
 
 
 def tokenize_words(text: str) -> list[str]:
-    """Word-level tokenization with NLTK."""
     return word_tokenize(text)
 
 
 def remove_stopwords(tokens: list[str]) -> list[str]:
-    """Remove English stopwords and punctuation-only tokens."""
     return [
         t for t in tokens
         if t not in STOP_WORDS and t not in string.punctuation and len(t) > 1
@@ -83,37 +74,27 @@ def remove_stopwords(tokens: list[str]) -> list[str]:
 
 
 def lemmatize_tokens(tokens: list[str]) -> list[str]:
-    """Lemmatize each token using WordNet."""
     return [lemmatizer.lemmatize(t) for t in tokens]
 
 
 def get_pos_tags(text: str) -> list[tuple[str, str]]:
-    """
-    Return (token, POS) pairs via spaCy.
-    Used by M4 stylometric analysis.
-    """
     if nlp is None:
         raise RuntimeError("spaCy model not loaded — cannot POS-tag.")
     doc = nlp(text)
     return [(token.text, token.pos_) for token in doc]
 
 
-def preprocess(raw: str) -> dict:
-    """
-    Full preprocessing pipeline for one document.
+def get_pos_tags_batch(texts: list[str]) -> list[list[tuple[str, str]]]:
+    """Batch POS tagging — much faster than calling get_pos_tags() in a loop."""
+    if nlp is None:
+        raise RuntimeError("spaCy model not loaded")
+    results = []
+    for doc in nlp.pipe(texts, batch_size=8):
+        results.append([(token.text, token.pos_) for token in doc])
+    return results
 
-    Returns
-    -------
-    dict with keys:
-        normalized       — lowercased, whitespace-collapsed text
-        sentences        — list[str]
-        tokens           — list[str]  (all words, lowercased)
-        clean_tokens     — list[str]  (stopwords + punct removed, lemmatized)
-        clean_text       — str        (rejoined clean_tokens — input for TF-IDF)
-        num_sentences    — int
-        num_tokens       — int
-        num_clean_tokens — int
-    """
+
+def preprocess(raw: str) -> dict:
     normalized = normalize_text(raw)
     sentences = tokenize_sentences(normalized)
     tokens = tokenize_words(normalized)
@@ -166,17 +147,15 @@ if __name__ == "__main__":
         print(f"  Sentences     : {result['num_sentences']}")
         print(f"  Raw tokens    : {result['num_tokens']}")
         print(f"  Clean tokens  : {result['num_clean_tokens']}")
-        print(f"  Sentences     : {result['sentences'][:2]}{'...' if len(result['sentences']) > 2 else ''}")
-        print(f"  Clean tokens  : {result['clean_tokens'][:12]}...")
-        print(f"  Clean text    : {result['clean_text'][:80]}...")
 
-    # Quick POS test
     if nlp is not None:
         pos = get_pos_tags("The quick brown fox jumps over the lazy dog.")
         print(f"\n--- POS Tag Sample ---")
         print(f"  {pos}")
-    else:
-        print("\n  [SKIP] POS tagging — spaCy model not available.")
+
+        batch = get_pos_tags_batch(["Hello world.", "Testing batch."])
+        print(f"\n--- Batch POS Sample ---")
+        print(f"  {len(batch)} results")
 
     print("\n" + "=" * 65)
     print("M1 preprocessing.py — ALL CHECKS PASSED")
