@@ -292,7 +292,34 @@ def embed_document(request: EmbedRequest):
         "num_sentences": len(sentences),
         "model": "all-MiniLM-L6-v2"
     }
+@app.post("/compare_traditional")
+def compare_traditional(request: CompareRequest):
+    """Traditional method: TF-IDF only (no ML models)."""
+    from modules.preprocessing import preprocess
+    from modules.lexical import compute_lexical_similarity
+    import time
 
+    start = time.time()
+    src_prep = preprocess(request.project_text)
+
+    comparisons = []
+    for s in request.compare_against:
+        sus_prep = preprocess(s.text)
+        lex = compute_lexical_similarity(src_prep["clean_text"], sus_prep["clean_text"])
+        risk = "HIGH" if lex["s_lex"] >= 0.80 else "MEDIUM" if lex["s_lex"] >= 0.65 else "LOW"
+        comparisons.append({
+            "suspect_id": s.id,
+            "suspect_title": s.title,
+            "score": lex["s_lex"],
+            "risk": risk,
+        })
+
+    elapsed = round(time.time() - start, 3)
+    return {
+        "method": "traditional_tfidf",
+        "comparisons": comparisons,
+        "elapsed_seconds": elapsed,
+    }
 # ---------------------------------------------------------------------------
 # Run directly
 # ---------------------------------------------------------------------------

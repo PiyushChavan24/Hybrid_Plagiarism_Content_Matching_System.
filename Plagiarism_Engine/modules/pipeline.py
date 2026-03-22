@@ -18,9 +18,9 @@ from modules.lexical import compute_lexical_similarity
 from modules.semantic import compute_semantic_similarity, sbert_model
 from modules.stylometric import compute_stylometric_similarity
 from modules.fusion import compute_fusion
-from modules.dsc import compute_threshold
+from modules.DSC import compute_threshold
 from modules.risk import classify_risk
-from modules.snippets import extract_snippets
+from modules.Snippets import extract_snippets
 
 # ---------------------------------------------------------------------------
 # Logger
