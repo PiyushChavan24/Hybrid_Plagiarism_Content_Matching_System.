@@ -162,13 +162,31 @@ router.post("/:id/compare", async (req, res) => {
    `Calling FastAPI: project=${projectId} against ${compareAgainst.length} docs`,
   );
 
+  // const fastApiUrl = process.env.FASTAPI_URL || "http://localhost:8000";
+  // const response = await axios.post(`${fastApiUrl}/compare`, {
+  //  project_id: projectId,
+  //  project_text: sourceProject.text,
+  //  compare_against: compareAgainst,
+  //  use_layer4: useLayer4,
+  // });
+
   const fastApiUrl = process.env.FASTAPI_URL || "http://localhost:8000";
-  const response = await axios.post(`${fastApiUrl}/compare`, {
-   project_id: projectId,
-   project_text: sourceProject.text,
-   compare_against: compareAgainst,
-   use_layer4: useLayer4,
-  });
+
+  const headers = {};
+  if (process.env.HF_TOKEN) {
+   headers["Authorization"] = `Bearer ${process.env.HF_TOKEN}`;
+  }
+
+  const response = await axios.post(
+   `${fastApiUrl}/compare`,
+   {
+    project_id: projectId,
+    project_text: sourceProject.text,
+    compare_against: compareAgainst,
+    use_layer4: useLayer4,
+   },
+   { headers, timeout: 120000 },
+  );
 
   const pipelineResult = response.data;
 
