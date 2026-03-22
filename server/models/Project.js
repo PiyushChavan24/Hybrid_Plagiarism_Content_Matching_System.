@@ -29,6 +29,14 @@ const ProjectSchema = new mongoose.Schema(
    type: Number,
    default: 0,
   },
+  embeddings: {
+   type: [Number],
+   default: [],
+  },
+  embeddingVersion: {
+   type: String,
+   default: "",
+  },
  },
  { timestamps: true },
 );

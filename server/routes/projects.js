@@ -46,11 +46,21 @@ async function uploadToGridFS(filePath, filename) {
    .pipe(uploadStream)
    .on("error", reject)
    .on("finish", () => {
-    // Clean up temp file
     fs.unlink(filePath, () => {});
     resolve(uploadStream.id);
    });
  });
+}
+
+// ---------------------------------------------------------------------------
+// Helper: get FastAPI headers (with HF token if available)
+// ---------------------------------------------------------------------------
+function getMLHeaders() {
+ const headers = {};
+ if (process.env.HF_TOKEN) {
+  headers["Authorization"] = `Bearer ${process.env.HF_TOKEN}`;
+ }
+ return headers;
 }
 
 // ===========================================================================
@@ -70,7 +80,6 @@ router.post("/upload", upload.single("pdf"), async (req, res) => {
   const extractedText = pdfData.text;
 
   if (!extractedText || extractedText.trim().length === 0) {
-   // Clean up temp file
    fs.unlink(req.file.path, () => {});
    return res.status(400).json({ error: "Could not extract text from PDF" });
   }
@@ -90,6 +99,26 @@ router.post("/upload", upload.single("pdf"), async (req, res) => {
 
   console.log(`Project uploaded: ${project._id} — "${title}"`);
 
+  // Pre-compute SBERT embeddings for faster future comparisons
+  try {
+   const fastApiUrl = process.env.FASTAPI_URL || "http://localhost:8000";
+   const embedRes = await axios.post(
+    `${fastApiUrl}/embed`,
+    { text: extractedText },
+    { headers: getMLHeaders(), timeout: 60000 },
+   );
+
+   project.embeddings = embedRes.data.embedding;
+   project.embeddingVersion = embedRes.data.model;
+   await project.save();
+   console.log(
+    `Embeddings computed for: ${project._id} (${embedRes.data.num_sentences} sentences)`,
+   );
+  } catch (err) {
+   console.warn("Embedding pre-computation failed:", err.message);
+   // Non-blocking — comparison still works without pre-computed embeddings
+  }
+
   res.status(201).json({
    message: "Project uploaded successfully",
    project: {
@@ -98,12 +127,12 @@ router.post("/upload", upload.single("pdf"), async (req, res) => {
     filename: project.filename,
     pageCount: project.pageCount,
     wordCount: project.wordCount,
+    hasEmbeddings: project.embeddings.length > 0,
     createdAt: project.createdAt,
    },
   });
  } catch (error) {
   console.error("Upload error:", error.message);
-  // Clean up temp file on error
   if (req.file && req.file.path) {
    fs.unlink(req.file.path, () => {});
   }
@@ -117,10 +146,21 @@ router.post("/upload", upload.single("pdf"), async (req, res) => {
 router.get("/", async (req, res) => {
  try {
   const projects = await Project.find()
-   .select("title filename pageCount wordCount createdAt")
+   .select("title filename pageCount wordCount createdAt embeddings")
    .sort({ createdAt: -1 });
 
-  res.json(projects);
+  // Add hasEmbeddings flag without sending the full embedding array
+  const result = projects.map((p) => ({
+   _id: p._id,
+   title: p.title,
+   filename: p.filename,
+   pageCount: p.pageCount,
+   wordCount: p.wordCount,
+   hasEmbeddings: p.embeddings && p.embeddings.length > 0,
+   createdAt: p.createdAt,
+  }));
+
+  res.json(result);
  } catch (error) {
   console.error("List error:", error.message);
   res.status(500).json({ error: error.message });
@@ -148,35 +188,22 @@ router.post("/:id/compare", async (req, res) => {
    });
   }
 
-  // Build compare_against array for FastAPI
+  // Build compare_against array — include pre-computed embeddings if available
   const compareAgainst = otherProjects.map((p) => ({
    id: p._id.toString(),
    title: p.title,
    text: p.text,
+   embedding: p.embeddings && p.embeddings.length > 0 ? p.embeddings : null,
   }));
 
-  const useLayer4 = req.body?.use_layer4 !== false; // default true
+  const useLayer4 = req.body?.use_layer4 !== false;
 
-  // Call FastAPI /compare endpoint
   console.log(
-   `Calling FastAPI: project=${projectId} against ${compareAgainst.length} docs`,
+   `Calling FastAPI: project=${projectId} against ${compareAgainst.length} docs ` +
+    `(${compareAgainst.filter((c) => c.embedding).length} with pre-computed embeddings)`,
   );
 
-  // const fastApiUrl = process.env.FASTAPI_URL || "http://localhost:8000";
-  // const response = await axios.post(`${fastApiUrl}/compare`, {
-  //  project_id: projectId,
-  //  project_text: sourceProject.text,
-  //  compare_against: compareAgainst,
-  //  use_layer4: useLayer4,
-  // });
-
   const fastApiUrl = process.env.FASTAPI_URL || "http://localhost:8000";
-
-  const headers = {};
-  if (process.env.HF_TOKEN) {
-   headers["Authorization"] = `Bearer ${process.env.HF_TOKEN}`;
-  }
-
   const response = await axios.post(
    `${fastApiUrl}/compare`,
    {
@@ -185,7 +212,7 @@ router.post("/:id/compare", async (req, res) => {
     compare_against: compareAgainst,
     use_layer4: useLayer4,
    },
-   { headers, timeout: 120000 },
+   { headers: getMLHeaders(), timeout: 120000 },
   );
 
   const pipelineResult = response.data;
@@ -224,7 +251,6 @@ router.post("/:id/compare", async (req, res) => {
   console.error("Compare error:", error.message);
 
   if (error.response) {
-   // FastAPI returned an error
    return res.status(502).json({
     error: "ML engine error",
     detail: error.response.data?.detail || error.message,
