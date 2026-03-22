@@ -4,6 +4,7 @@ HPCM Plagiarism Detection System
 ----------------------------------
 Orchestrator: calls M1 → M7 + M9 in sequence, returns a full report dict.
 OPTIMIZED: Caches source preprocessing and embeddings across comparisons.
+           Uses pre-computed suspect embeddings when available.
 """
 
 import logging
@@ -43,10 +44,12 @@ def run_pipeline(
     _src_prep: dict = None,
     _src_embeddings: np.ndarray = None,
     _src_pos: list = None,
+    # Pre-computed suspect embedding (from database)
+    _sus_embedding: list = None,
 ) -> dict:
     """
     Run the full HPCM plagiarism detection pipeline on a document pair.
-    Accepts pre-computed source data to avoid redundant processing.
+    Accepts pre-computed source data and suspect embeddings to avoid redundant processing.
     """
     start_time = time.time()
 
@@ -73,7 +76,13 @@ def run_pipeline(
     if _src_embeddings is not None and len(_src_embeddings) > 0:
         # Use cached source embeddings
         from sklearn.metrics.pairwise import cosine_similarity
-        sus_embeddings = _encode_sentences(sus_prep["sentences"])
+
+        # Use pre-computed suspect embedding if available, otherwise encode
+        if _sus_embedding is not None:
+            logger.info("M3: Using pre-computed suspect embedding")
+            sus_embeddings = np.array(_sus_embedding).reshape(1, -1)
+        else:
+            sus_embeddings = _encode_sentences(sus_prep["sentences"])
 
         if len(sus_embeddings) == 0 or len(_src_embeddings) == 0:
             sem_result = {
@@ -85,19 +94,36 @@ def run_pipeline(
             }
         else:
             src_doc = np.mean(_src_embeddings, axis=0).reshape(1, -1)
-            sus_doc = np.mean(sus_embeddings, axis=0).reshape(1, -1)
+
+            # For pre-computed embedding, it's already a document-level embedding
+            if _sus_embedding is not None:
+                sus_doc = sus_embeddings
+            else:
+                sus_doc = np.mean(sus_embeddings, axis=0).reshape(1, -1)
+
             s_sem_val = float(cosine_similarity(src_doc, sus_doc)[0][0])
 
-            sim_matrix = cosine_similarity(_src_embeddings, sus_embeddings)
-            best_matches = np.max(sim_matrix, axis=1)
-
-            sem_result = {
-                "s_sem": round(s_sem_val, 6),
-                "max_sentence_sim": round(float(np.max(sim_matrix)), 6),
-                "avg_sentence_sim": round(float(np.mean(best_matches)), 6),
-                "source_sent_count": len(src_prep["sentences"]),
-                "suspect_sent_count": len(sus_prep["sentences"]),
-            }
+            # Sentence-level similarity matrix (only if we have sentence-level embeddings)
+            if _sus_embedding is not None:
+                # Can't compute sentence-level matrix with doc-level embedding
+                # Use doc-level similarity as approximation
+                sem_result = {
+                    "s_sem": round(s_sem_val, 6),
+                    "max_sentence_sim": round(s_sem_val, 6),
+                    "avg_sentence_sim": round(s_sem_val, 6),
+                    "source_sent_count": len(src_prep["sentences"]),
+                    "suspect_sent_count": len(sus_prep["sentences"]),
+                }
+            else:
+                sim_matrix = cosine_similarity(_src_embeddings, sus_embeddings)
+                best_matches = np.max(sim_matrix, axis=1)
+                sem_result = {
+                    "s_sem": round(s_sem_val, 6),
+                    "max_sentence_sim": round(float(np.max(sim_matrix)), 6),
+                    "avg_sentence_sim": round(float(np.mean(best_matches)), 6),
+                    "source_sent_count": len(src_prep["sentences"]),
+                    "suspect_sent_count": len(sus_prep["sentences"]),
+                }
     else:
         sem_result = compute_semantic_similarity(
             src_prep["sentences"],
@@ -192,14 +218,15 @@ def run_pipeline(
             "source_tokens": src_prep["num_tokens"],
             "suspect_tokens": sus_prep["num_tokens"],
             "snippet_count": len(snippets),
+            "used_cached_suspect_embedding": _sus_embedding is not None,
             "elapsed_seconds": elapsed,
         },
     }
 
     logger.info(
-        "Pipeline complete: %s vs %s → %s (C=%.4f, T=%.4f, snippets=%d) in %.3fs",
+        "Pipeline complete: %s vs %s → %s (C=%.4f, T=%.4f, snippets=%d, cached_sus=%s) in %.3fs",
         source_id, suspect_id, risk_result["risk_level"],
-        c_final, t_cal, len(snippets), elapsed,
+        c_final, t_cal, len(snippets), _sus_embedding is not None, elapsed,
     )
     return report
 
@@ -213,6 +240,7 @@ def run_full_comparison(
     """
     Compare one project against multiple suspect documents.
     OPTIMIZED: Pre-computes source preprocessing, embeddings, and POS tags once.
+               Uses pre-computed suspect embeddings when available from database.
     """
     total_start = time.time()
 
@@ -221,10 +249,14 @@ def run_full_comparison(
     src_prep = preprocess(project_text)
     src_embeddings = _encode_sentences(src_prep["sentences"])
     src_pos = get_pos_tags(src_prep["normalized"]) if use_layer4 else None
+
+    cached_count = sum(1 for s in compare_against if s.get("embedding"))
     logger.info(
-        "Source pre-computed: %d sentences, %d tokens, embeddings shape=%s",
+        "Source pre-computed: %d sentences, %d tokens, embeddings shape=%s. "
+        "Suspects: %d total, %d with pre-computed embeddings",
         src_prep["num_sentences"], src_prep["num_tokens"],
         src_embeddings.shape if len(src_embeddings) > 0 else "(empty)",
+        len(compare_against), cached_count,
     )
 
     # ===== RUN PIPELINE FOR EACH SUSPECT =====
@@ -235,8 +267,10 @@ def run_full_comparison(
 
     for i, suspect in enumerate(compare_against):
         logger.info(
-            "Comparing %d/%d: %s",
-            i + 1, len(compare_against), suspect.get("title", suspect["id"]),
+            "Comparing %d/%d: %s (cached_embedding=%s)",
+            i + 1, len(compare_against),
+            suspect.get("title", suspect["id"]),
+            bool(suspect.get("embedding")),
         )
         report = run_pipeline(
             source_id=project_id,
@@ -248,6 +282,7 @@ def run_full_comparison(
             _src_prep=src_prep,
             _src_embeddings=src_embeddings,
             _src_pos=src_pos,
+            _sus_embedding=suspect.get("embedding"),
         )
         comparisons.append(report)
 
@@ -337,9 +372,10 @@ if __name__ == "__main__":
         title = comp["suspect_title"]
         t = comp["metadata"]["elapsed_seconds"]
         snips = len(comp["snippets"])
+        cached = comp["metadata"]["used_cached_suspect_embedding"]
 
         print(f"\n  [{risk:6s}] {title}")
-        print(f"           C_final={c:.4f}  Time={t}s  Snippets={snips}")
+        print(f"           C_final={c:.4f}  Time={t}s  Snippets={snips}  Cached={cached}")
 
     print(f"\n{'=' * 65}")
     print("M8 pipeline.py (optimized) — TEST COMPLETE")
